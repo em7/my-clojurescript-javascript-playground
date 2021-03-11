@@ -1,7 +1,8 @@
 (ns stock-market-monitor.core
   (:require [seesaw.core :refer :all])
   (:import (java.util.concurrent ScheduledThreadPoolExecutor
-                                 TimeUnit)))
+                                 TimeUnit)
+           (clojure.lang PersistentQueue)))
 
 (native!)
 
@@ -11,7 +12,12 @@
 
 (def price-label (label "Price: -"))
 
-(config! main-frame :content price-label)
+(def rolling-avg-label (label "Rolling average: -"))
+
+(config! main-frame :content (border-panel
+                               :north price-label
+                               :center rolling-avg-label
+                               :border 5))
 
 (def pool (atom nil))
 
@@ -31,12 +37,33 @@
   (Thread/sleep 200)
   (rand-int 1000))
 
+(defn roll-buffer [buffer num buffer-size]
+  (let [buffer (conj buffer num)]
+    (if (> (count buffer) buffer-size)
+      (pop buffer)
+      buffer)))
+
+(defn avg [numbers]
+  (float (/ (reduce + numbers)
+            (count numbers))))
+
+(defn make-rolling-avg [buffer-size]
+  (let [buffer (atom clojure.lang.PersistentQueue/EMPTY)]
+    (fn [n]
+      (swap! buffer roll-buffer n buffer-size)
+      (avg @buffer))))
+
+(def rolling-avg (make-rolling-avg 5))
+
+(defn worker []
+  (let [price (share-price "XYZ")]
+    (->> (str "Price: " price) (text! price-label))
+    (->> (str "Rolling average: " (rolling-avg price)) (text! rolling-avg-label))))
+
 (defn -main [& args]
   (show! main-frame)
   (.addShutdownHook (Runtime/getRuntime)
                     (Thread. #(shutdown @pool)))
   (init-scheduler 1)
   (run-every @pool 500
-             #(->> (str "Price: " (share-price "XYZ"))
-                   (text! price-label)
-                   invoke-now)))
+             #(invoke-now (worker))))
