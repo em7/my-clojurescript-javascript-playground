@@ -1,8 +1,9 @@
 (ns stock-market-monitor.core
-  (:require [seesaw.core :refer :all])
+  (:require [seesaw.core :refer :all]
+            [rx.lang.clojure.core :as rx])
   (:import (java.util.concurrent ScheduledThreadPoolExecutor
                                  TimeUnit)
-           (clojure.lang PersistentQueue)))
+           (rx Observable)))
 
 (native!)
 
@@ -19,51 +20,25 @@
                                :center rolling-avg-label
                                :border 5))
 
-(def pool (atom nil))
-
-(defn init-scheduler [num-threads]
-  (reset! pool (ScheduledThreadPoolExecutor. num-threads)))
-
-(defn run-every [pool millis f]
-  (.scheduleWithFixedDelay pool
-                           f
-                           0 millis TimeUnit/MILLISECONDS))
-
-(defn shutdown [pool]
-  (println "Shutting down scheduler...")
-  (.shutdown pool))
-
 (defn share-price [company-code]
   (Thread/sleep 200)
   (rand-int 1000))
-
-(defn roll-buffer [buffer num buffer-size]
-  (let [buffer (conj buffer num)]
-    (if (> (count buffer) buffer-size)
-      (pop buffer)
-      buffer)))
 
 (defn avg [numbers]
   (float (/ (reduce + numbers)
             (count numbers))))
 
-(defn make-rolling-avg [buffer-size]
-  (let [buffer (atom clojure.lang.PersistentQueue/EMPTY)]
-    (fn [n]
-      (swap! buffer roll-buffer n buffer-size)
-      (avg @buffer))))
-
-(def rolling-avg (make-rolling-avg 5))
-
-(defn worker []
-  (let [price (share-price "XYZ")]
-    (->> (str "Price: " price) (text! price-label))
-    (->> (str "Rolling average: " (rolling-avg price)) (text! rolling-avg-label))))
+(defn make-price-obs [company-code]
+  (rx/return (share-price company-code)))
 
 (defn -main [& args]
   (show! main-frame)
-  (.addShutdownHook (Runtime/getRuntime)
-                    (Thread. #(shutdown @pool)))
-  (init-scheduler 1)
-  (run-every @pool 500
-             #(invoke-now (worker))))
+  (let [price-obs (-> (rx/flatmap (fn [_] (make-price-obs "XYZ"))
+                                  (Observable/interval 500 TimeUnit/MILLISECONDS))
+                      (.publish))
+        sliding-buffer-obs (.buffer price-obs 5 1)]
+    (rx/subscribe price-obs
+                  #(text! price-label (str "Price: " %)))
+    (rx/subscribe sliding-buffer-obs
+                  #(text! rolling-avg-label (str "Rolling average: " (avg %))))
+    (.connect price-obs)))
